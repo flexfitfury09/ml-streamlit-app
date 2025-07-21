@@ -1,7 +1,7 @@
-streamlit
-pandas
-scikit-learn
-numpy
-tensorflow
-Pillow
-plotly
+streamlit==1.33.0
+pandas==2.2.0
+scikit-learn==1.4.1.post1
+numpy==1.26.4
+tensorflow==2.16.1
+Pillow==10.2.0
+plotly==5.18.0
