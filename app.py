@@ -7,209 +7,171 @@ import joblib
 import io
 import shap
 
-from sklearn.model_selection import train_test_split, GridSearchCV
+from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.impute import SimpleImputer
-from sklearn.feature_selection import SelectFromModel
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.metrics import accuracy_score, r2_score, classification_report, confusion_matrix
+from sklearn.metrics import accuracy_score, r2_score, classification_report
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="AutoML Co-Pilot",
-    page_icon="🤖",
+    page_title="AutoML Guardian",
+    page_icon="🛡️",
     layout="wide"
 )
 
 # --- Helper Functions ---
 @st.cache_data
 def load_data(file):
-    """Loads data and returns a pandas DataFrame."""
-    return pd.read_csv(file)
+    return pd.read_csv(file, encoding='utf-8')
 
-# --- Session State Initialization ---
-def init_session_state():
-    if 'run_analysis' not in st.session_state:
-        st.session_state.run_analysis = False
-    if 'results' not in st.session_state:
-        st.session_state.results = {}
+# --- Session State ---
+if 'analysis_complete' not in st.session_state:
+    st.session_state.analysis_complete = False
+if 'results' not in st.session_state:
+    st.session_state.results = {}
 
-init_session_state()
-
-# --- UI Layout ---
-st.title("🤖 AutoML Co-Pilot")
-st.write("Your intelligent partner for automated machine learning. From data to deployment-ready models with deep-dive explainability.")
-
+# --- UI: Sidebar ---
 with st.sidebar:
-    st.header("1. Data Upload")
-    uploaded_file = st.file_uploader("Upload your dataset (CSV)", type="csv")
+    st.title("🛡️ AutoML Guardian")
+    st.header("1. Upload Dataset")
+    uploaded_file = st.file_uploader("Upload your CSV file", type="csv")
     
     if uploaded_file:
+        st.header("2. Configure Analysis")
         df = load_data(uploaded_file)
-        st.header("2. Analysis Configuration")
-        target_column = st.selectbox("Select Target Column", df.columns)
+        target_column = st.selectbox("Select Your Target Column", df.columns)
         
-        with st.expander("Advanced Options"):
-            use_feature_selection = st.toggle("Automated Feature Selection", True)
-            use_hyperparameter_tuning = st.toggle("Hyperparameter Tuning (Slower)", False)
+        if st.button("🚀 Run AutoML Guardian", use_container_width=True, type="primary"):
+            st.session_state.analysis_complete = False # Reset on new run
 
-        if st.button("🚀 Launch Co-Pilot", use_container_width=True, type="primary"):
-            st.session_state.run_analysis = True
-            st.session_state.config = {
-                "target_column": target_column,
-                "use_feature_selection": use_feature_selection,
-                "use_hyperparameter_tuning": use_hyperparameter_tuning
-            }
+            # --- THE GUARDIAN'S PRE-FLIGHT CHECK ---
+            with st.spinner("Running Pre-flight Checks..."):
+                target_series = df[target_column].dropna()
+                
+                # Check 1: Determine Task Type (THIS IS THE CORE FIX)
+                if pd.api.types.is_numeric_dtype(target_series) and target_series.nunique() > 20:
+                    task = "📈 Regression"
+                else:
+                    task = "🎯 Classification"
+                st.session_state.task = task
+            st.success(f"Pre-flight Check Complete! Task auto-detected: **{task}**")
 
-# --- Main Application Logic ---
-if not st.session_state.run_analysis and not uploaded_file:
-    st.info("Upload a dataset and configure your analysis in the sidebar to get started.")
+            with st.spinner("Guardian at the helm... This may take a moment."):
+                # 3. Preprocessing
+                y = df[target_column]
+                X = df.drop(columns=[target_column])
+                
+                cleaning_log = []
+                
+                if task == "🎯 Classification":
+                    le = LabelEncoder()
+                    y = le.fit_transform(y)
+                    st.session_state.results['label_encoder'] = le
+                    cleaning_log.append("Encoded target column 'y' for Classification.")
+                
+                for col in X.columns:
+                    if pd.api.types.is_numeric_dtype(X[col]):
+                        if X[col].isnull().sum() > 0:
+                            imputer = SimpleImputer(strategy='median')
+                            X[col] = imputer.fit_transform(X[[col]]).flatten()
+                            cleaning_log.append(f"Imputed missing values in '{col}' with median.")
+                    else:
+                        if X[col].isnull().sum() > 0:
+                            imputer = SimpleImputer(strategy='most_frequent')
+                            X[col] = imputer.fit_transform(X[[col]]).flatten()
+                            cleaning_log.append(f"Imputed missing values in '{col}' with most frequent value.")
+                        X[col] = LabelEncoder().fit_transform(X[col])
+                        cleaning_log.append(f"Encoded categorical column '{col}'.")
+                
+                scaler = StandardScaler()
+                X_scaled = scaler.fit_transform(X)
+                X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+                
+                # 4. Model Training
+                model = RandomForestRegressor(random_state=42, n_jobs=-1) if task == "📈 Regression" else RandomForestClassifier(random_state=42, n_jobs=-1)
+                model.fit(X_train, y_train)
+                
+                # 5. Explainability
+                explainer = shap.Explainer(model, X_train)
+                shap_values = explainer(X_test)
 
-if st.session_state.run_analysis and uploaded_file:
-    df = load_data(uploaded_file)
-    config = st.session_state.config
-    target_column = config['target_column']
-    
-    with st.spinner("Co-Pilot is at the helm... Performing comprehensive analysis. Please wait."):
-        # 1. Intelligent Problem Detection
-        if pd.api.types.is_numeric_dtype(df[target_column]) and df[target_column].nunique() > 20:
-            task = "📈 Regression"
-        else:
-            task = "🎯 Classification"
-        
-        # 2. Preprocessing Pipeline
-        y = df[target_column]
-        X = df.drop(columns=[target_column])
-        X.columns = X.columns.str.replace('[^A-Za-z0-9_]+', '', regex=True) # Sanitize column names
-        
-        if task == "🎯 Classification":
-            le = LabelEncoder()
-            y = le.fit_transform(y)
-            st.session_state.results['label_encoder'] = le
-        
-        # Data Cleaning & Encoding
-        numeric_cols = X.select_dtypes(include=np.number).columns
-        categorical_cols = X.select_dtypes(exclude=np.number).columns
-        
-        for col in numeric_cols: X[col] = SimpleImputer(strategy='median').fit_transform(X[[col]]).flatten()
-        for col in categorical_cols: X[col] = LabelEncoder().fit_transform(SimpleImputer(strategy='most_frequent').fit_transform(X[[col]]).flatten())
+                # Store all results at once
+                st.session_state.results.update({
+                    "task": task,
+                    "model": model,
+                    "X_test_df": pd.DataFrame(X_test, columns=X.columns),
+                    "y_test": y_test,
+                    "explainer": explainer,
+                    "shap_values": shap_values,
+                    "cleaning_log": cleaning_log,
+                    "scaler": scaler,
+                    "original_features": X.columns.tolist()
+                })
+                st.session_state.analysis_complete = True
+            st.success("Analysis complete!")
+            st.rerun()
 
-        # 3. Automated Feature Selection (Optional)
-        if config['use_feature_selection']:
-            selector_model = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1) if task == "📈 Regression" else RandomForestClassifier(n_estimators=50, random_state=42, n_jobs=-1)
-            selector = SelectFromModel(selector_model, threshold='median')
-            X_selected = selector.fit_transform(X, y)
-            selected_features = X.columns[selector.get_support()]
-            X = pd.DataFrame(X_selected, columns=selected_features)
-        
-        # Scaling and Splitting
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.25, random_state=42)
-        st.session_state.results['scaler'] = scaler
-        st.session_state.results['features'] = X.columns
-
-        # 4. Model Training & Tuning
-        model_to_tune = RandomForestRegressor(random_state=42) if task == "📈 Regression" else RandomForestClassifier(random_state=42)
-        
-        if config['use_hyperparameter_tuning']:
-            param_grid = {'n_estimators': [100, 200], 'max_depth': [10, 20, None]}
-            grid_search = GridSearchCV(model_to_tune, param_grid, cv=3, n_jobs=-1, scoring='r2' if task == "📈 Regression" else 'accuracy')
-            grid_search.fit(X_train, y_train)
-            best_model = grid_search.best_estimator_
-            st.session_state.results['best_params'] = grid_search.best_params_
-        else:
-            best_model = model_to_tune.fit(X_train, y_train)
-        
-        # 5. Evaluation and Prediction
-        y_pred = best_model.predict(X_test)
-        score = r2_score(y_test, y_pred) if task == "📈 Regression" else accuracy_score(y_test, y_pred)
-        
-        # 6. SHAP Explainability
-        explainer = shap.Explainer(best_model, X_train)
-        shap_values = explainer(X_test)
-        
-        # Storing all artifacts in session state
-        st.session_state.results.update({
-            'task': task, 'best_model': best_model, 'score': score, 'y_test': y_test, 'y_pred': y_pred,
-            'X_test_df': pd.DataFrame(X_test, columns=X.columns), 'explainer': explainer, 'shap_values': shap_values,
-            'cleaned_data': pd.concat([X, pd.Series(y, name=target_column)], axis=1)
-        })
-
-    st.success("✅ Co-Pilot analysis complete!")
-
-# --- Display Results ---
-if st.session_state.run_analysis:
+# --- Main Page Display ---
+if not st.session_state.analysis_complete:
+    st.info("Upload a dataset and launch the Guardian from the sidebar to begin.")
+else:
     res = st.session_state.results
     
-    # Run Summary
-    st.header("📈 Run Summary")
-    c1, c2, c3 = st.columns(3)
-    c1.metric("Problem Type Detected", res['task'])
-    c2.metric("Features Selected", f"{len(res['features'])}/{len(df.drop(columns=[st.session_state.config['target_column']]).columns)}")
-    c3.metric(f"Best Model Score ({'R²' if res['task'] == '📈 Regression' else 'Accuracy'})", f"{res['score']:.4f}")
+    st.header(f"Analysis Dashboard: {res['task']}")
     
-    if 'best_params' in res:
-        st.info(f"Optimal hyperparameters found: `{res['best_params']}`")
-
-    # --- Result Tabs ---
-    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏆 Model Performance", "🧠 Global Explanation", "🔮 Local Prediction Explorer", "💡 What-If Simulator", "📦 Assets"])
+    tab1, tab2, tab3, tab4 = st.tabs(["🏆 Performance", "🧠 Explainability", "💡 Simulator", "📦 Assets Hub"])
 
     with tab1:
+        st.subheader("Model Evaluation")
+        y_pred = res['model'].predict(res['X_test_df'])
+        
         if res['task'] == '🎯 Classification':
-            st.subheader("Classification Report")
-            report_df = pd.DataFrame(classification_report(res['y_test'], res['y_pred'], target_names=res['label_encoder'].classes_, output_dict=True)).transpose()
-            st.dataframe(report_df)
-            
-            st.subheader("Confusion Matrix")
-            cm_fig, ax = plt.subplots()
-            sns.heatmap(confusion_matrix(res['y_test'], res['y_pred']), annot=True, fmt='d', ax=ax, cmap='Blues')
-            st.pyplot(cm_fig)
-        else:
-            st.subheader("Regression Metrics")
-            st.json({
-                "R-squared": r2_score(res['y_test'], res['y_pred']),
-                "Mean Absolute Error": np.mean(np.abs(res['y_pred'] - res['y_test'])),
-                "Root Mean Squared Error": np.sqrt(np.mean((res['y_pred'] - res['y_test'])**2))
-            })
+            score = accuracy_score(res['y_test'], y_pred)
+            st.metric("Model Accuracy", f"{score:.4f}")
+            report = classification_report(res['y_test'], y_pred, target_names=res['label_encoder'].classes_, output_dict=True)
+            st.dataframe(pd.DataFrame(report).transpose())
+        else: # Regression
+            score = r2_score(res['y_test'], y_pred)
+            st.metric("Model R-squared (R²)", f"{score:.4f}")
 
     with tab2:
-        st.subheader("SHAP Summary Plot")
-        st.write("This plot shows the most significant features and their overall impact on the model's predictions.")
+        st.subheader("SHAP Model Explanations")
+        st.write("Understand *why* the model makes its predictions.")
+        
+        st.write("**Global Feature Importance:**")
         summary_fig, ax = plt.subplots()
         shap.summary_plot(res['shap_values'], res['X_test_df'], plot_type="bar", show=False)
         st.pyplot(summary_fig)
+        
+        st.write("**Local Prediction Deconstruction:**")
+        row_index = st.selectbox("Select a row from the test set to explain:", res['X_test_df'].index)
+        st.dataframe(res['X_test_df'].iloc[[row_index]])
+        
+        decision_fig, ax = plt.subplots()
+        shap.decision_plot(res['explainer'].expected_value, res['shap_values'][row_index], res['X_test_df'].iloc[row_index], show=False)
+        st.pyplot(decision_fig)
 
     with tab3:
-        st.subheader("Single Prediction Deconstruction")
-        row_index = st.selectbox("Select a row from the test set to explain:", res['X_test_df'].index)
-        st.write("The force plot below shows features pushing the prediction higher (red) or lower (blue).")
-        st.dataframe(res['X_test_df'].iloc[[row_index]])
-        shap.force_plot(res['explainer'].expected_value, res['shap_values'][row_index], res['X_test_df'].iloc[row_index], matplotlib=True, show=False)
-        st.pyplot(plt.gcf(), bbox_inches='tight')
-        plt.clf()
-
-    with tab4:
-        st.subheader("Manual Prediction Simulator")
+        st.subheader("What-If Scenario Simulator")
         input_data = {}
-        for col in res['features']:
-            input_data[col] = st.number_input(f"Enter value for {col}", value=float(res['X_test_df'][col].mean()))
+        for col in res['original_features']:
+            input_data[col] = st.number_input(f"Input for '{col}'", value=0.0, key=f"sim_{col}")
         
-        if st.button("Predict"):
+        if st.button("Predict Scenario"):
             input_df = pd.DataFrame([input_data])
             input_scaled = res['scaler'].transform(input_df)
-            prediction = res['best_model'].predict(input_scaled)
+            prediction = res['model'].predict(input_scaled)
             if res['task'] == "🎯 Classification":
                 prediction = res['label_encoder'].inverse_transform(prediction)
-            st.success(f"**Predicted Output:** {prediction[0]}")
-
-    with tab5:
-        st.subheader("Downloadable Assets")
-        st.download_button("⬇️ Download Trained Model (.joblib)", data=joblib.dump(res['best_model'], 'model.joblib'), file_name="best_model.joblib")
-        st.download_button("⬇️ Download Cleaned Data (.csv)", data=res['cleaned_data'].to_csv(index=False).encode('utf-8'), file_name="cleaned_data.csv")
+            st.success(f"**Simulated Prediction:** {prediction[0]}")
+            
+    with tab4:
+        st.subheader("Downloadable Assets & Logs")
         
-        predictions_df = res['X_test_df'].copy()
-        predictions_df['prediction'] = res['y_pred']
-        if res['task'] == "🎯 Classification":
-            predictions_df['prediction'] = res['label_encoder'].inverse_transform(predictions_df['prediction'])
-        st.download_button("⬇️ Download Predictions on Test Set (.csv)", data=predictions_df.to_csv(index=False).encode('utf-8'), file_name="test_predictions.csv")
+        st.write("**Data Cleaning Log:**")
+        st.json(res['cleaning_log'])
+        
+        model_bytes = io.BytesIO()
+        joblib.dump(res['model'], model_bytes)
+        st.download_button("⬇️ Download Trained Model (.joblib)", data=model_bytes, file_name="guardian_model.joblib")
