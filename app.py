@@ -1,202 +1,215 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
+import seaborn as sns
+import matplotlib.pyplot as plt
 import joblib
 import io
+import shap
 
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, GridSearchCV
 from sklearn.preprocessing import LabelEncoder, StandardScaler
 from sklearn.impute import SimpleImputer
-
-# Models
-from sklearn.linear_model import LogisticRegression, LinearRegression
+from sklearn.feature_selection import SelectFromModel
 from sklearn.ensemble import RandomForestClassifier, RandomForestRegressor
-from sklearn.tree import DecisionTreeClassifier, DecisionTreeRegressor
-from xgboost import XGBClassifier, XGBRegressor
-
-# Metrics & Visualization
-from sklearn.metrics import accuracy_score, r2_score, classification_report, confusion_matrix, mean_squared_error, mean_absolute_error
+from sklearn.metrics import accuracy_score, r2_score, classification_report, confusion_matrix
 
 # --- Page Configuration ---
 st.set_page_config(
-    page_title="Professional AutoML Platform",
-    page_icon="🏆",
+    page_title="AutoML Co-Pilot",
+    page_icon="🤖",
     layout="wide"
 )
-
-# --- Main App ---
-st.title("🏆 Professional Automated Machine Learning Platform")
-st.write("This advanced tool automates the entire ML workflow: from data cleaning and model training to detailed evaluation and feature analysis. **No deep learning, no errors.**")
 
 # --- Helper Functions ---
 @st.cache_data
 def load_data(file):
+    """Loads data and returns a pandas DataFrame."""
     return pd.read_csv(file)
 
-def clean_data(df):
-    cleaned_df = df.copy()
-    for col in cleaned_df.columns:
-        if cleaned_df[col].isnull().sum() > 0:
-            if cleaned_df[col].dtype in ['int64', 'float64']:
-                imputer = SimpleImputer(strategy='median')
-                cleaned_df[col] = imputer.fit_transform(cleaned_df[[col]]).flatten()
-            else:
-                imputer = SimpleImputer(strategy='most_frequent')
-                cleaned_df[col] = imputer.fit_transform(cleaned_df[[col]]).flatten()
-    return cleaned_df
+# --- Session State Initialization ---
+def init_session_state():
+    if 'run_analysis' not in st.session_state:
+        st.session_state.run_analysis = False
+    if 'results' not in st.session_state:
+        st.session_state.results = {}
 
-# --- Sidebar for User Inputs ---
+init_session_state()
+
+# --- UI Layout ---
+st.title("🤖 AutoML Co-Pilot")
+st.write("Your intelligent partner for automated machine learning. From data to deployment-ready models with deep-dive explainability.")
+
 with st.sidebar:
-    st.header("1. Upload Your Data")
-    uploaded_file = st.file_uploader("Choose a CSV file", type="csv")
+    st.header("1. Data Upload")
+    uploaded_file = st.file_uploader("Upload your dataset (CSV)", type="csv")
     
     if uploaded_file:
         df = load_data(uploaded_file)
-        st.header("2. Select Your Goal")
-        task = st.selectbox("Choose the ML Task", ["--Select--", "📈 Regression", "🎯 Classification"])
+        st.header("2. Analysis Configuration")
+        target_column = st.selectbox("Select Target Column", df.columns)
+        
+        with st.expander("Advanced Options"):
+            use_feature_selection = st.toggle("Automated Feature Selection", True)
+            use_hyperparameter_tuning = st.toggle("Hyperparameter Tuning (Slower)", False)
 
-        if task != "--Select--":
-            st.header("3. Choose Target Column")
-            target_column = st.selectbox("Select the column to predict", df.columns)
-            st.header("4. Start Training")
-            if st.button("🚀 Train Models", use_container_width=True):
-                st.session_state.run_training = True
-            else:
-                st.session_state.run_training = False
-        else:
-             st.session_state.run_training = False
-    else:
-        st.session_state.run_training = False
+        if st.button("🚀 Launch Co-Pilot", use_container_width=True, type="primary"):
+            st.session_state.run_analysis = True
+            st.session_state.config = {
+                "target_column": target_column,
+                "use_feature_selection": use_feature_selection,
+                "use_hyperparameter_tuning": use_hyperparameter_tuning
+            }
 
+# --- Main Application Logic ---
+if not st.session_state.run_analysis and not uploaded_file:
+    st.info("Upload a dataset and configure your analysis in the sidebar to get started.")
 
-# --- Main Panel for Display ---
-if uploaded_file is None:
-    st.info("Please upload a CSV file using the sidebar to begin.")
-else:
-    st.header("📊 Data Preview")
-    st.dataframe(df.head())
+if st.session_state.run_analysis and uploaded_file:
+    df = load_data(uploaded_file)
+    config = st.session_state.config
+    target_column = config['target_column']
     
-    if st.session_state.get('run_training', False):
-        with st.spinner("Processing... Please wait."):
-            # 1. Data Cleaning
-            df_cleaned = clean_data(df)
+    with st.spinner("Co-Pilot is at the helm... Performing comprehensive analysis. Please wait."):
+        # 1. Intelligent Problem Detection
+        if pd.api.types.is_numeric_dtype(df[target_column]) and df[target_column].nunique() > 20:
+            task = "📈 Regression"
+        else:
+            task = "🎯 Classification"
+        
+        # 2. Preprocessing Pipeline
+        y = df[target_column]
+        X = df.drop(columns=[target_column])
+        X.columns = X.columns.str.replace('[^A-Za-z0-9_]+', '', regex=True) # Sanitize column names
+        
+        if task == "🎯 Classification":
+            le = LabelEncoder()
+            y = le.fit_transform(y)
+            st.session_state.results['label_encoder'] = le
+        
+        # Data Cleaning & Encoding
+        numeric_cols = X.select_dtypes(include=np.number).columns
+        categorical_cols = X.select_dtypes(exclude=np.number).columns
+        
+        for col in numeric_cols: X[col] = SimpleImputer(strategy='median').fit_transform(X[[col]]).flatten()
+        for col in categorical_cols: X[col] = LabelEncoder().fit_transform(SimpleImputer(strategy='most_frequent').fit_transform(X[[col]]).flatten())
+
+        # 3. Automated Feature Selection (Optional)
+        if config['use_feature_selection']:
+            selector_model = RandomForestRegressor(n_estimators=50, random_state=42, n_jobs=-1) if task == "📈 Regression" else RandomForestClassifier(n_estimators=50, random_state=42, n_jobs=-1)
+            selector = SelectFromModel(selector_model, threshold='median')
+            X_selected = selector.fit_transform(X, y)
+            selected_features = X.columns[selector.get_support()]
+            X = pd.DataFrame(X_selected, columns=selected_features)
+        
+        # Scaling and Splitting
+        scaler = StandardScaler()
+        X_scaled = scaler.fit_transform(X)
+        X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.25, random_state=42)
+        st.session_state.results['scaler'] = scaler
+        st.session_state.results['features'] = X.columns
+
+        # 4. Model Training & Tuning
+        model_to_tune = RandomForestRegressor(random_state=42) if task == "📈 Regression" else RandomForestClassifier(random_state=42)
+        
+        if config['use_hyperparameter_tuning']:
+            param_grid = {'n_estimators': [100, 200], 'max_depth': [10, 20, None]}
+            grid_search = GridSearchCV(model_to_tune, param_grid, cv=3, n_jobs=-1, scoring='r2' if task == "📈 Regression" else 'accuracy')
+            grid_search.fit(X_train, y_train)
+            best_model = grid_search.best_estimator_
+            st.session_state.results['best_params'] = grid_search.best_params_
+        else:
+            best_model = model_to_tune.fit(X_train, y_train)
+        
+        # 5. Evaluation and Prediction
+        y_pred = best_model.predict(X_test)
+        score = r2_score(y_test, y_pred) if task == "📈 Regression" else accuracy_score(y_test, y_pred)
+        
+        # 6. SHAP Explainability
+        explainer = shap.Explainer(best_model, X_train)
+        shap_values = explainer(X_test)
+        
+        # Storing all artifacts in session state
+        st.session_state.results.update({
+            'task': task, 'best_model': best_model, 'score': score, 'y_test': y_test, 'y_pred': y_pred,
+            'X_test_df': pd.DataFrame(X_test, columns=X.columns), 'explainer': explainer, 'shap_values': shap_values,
+            'cleaned_data': pd.concat([X, pd.Series(y, name=target_column)], axis=1)
+        })
+
+    st.success("✅ Co-Pilot analysis complete!")
+
+# --- Display Results ---
+if st.session_state.run_analysis:
+    res = st.session_state.results
+    
+    # Run Summary
+    st.header("📈 Run Summary")
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Problem Type Detected", res['task'])
+    c2.metric("Features Selected", f"{len(res['features'])}/{len(df.drop(columns=[st.session_state.config['target_column']]).columns)}")
+    c3.metric(f"Best Model Score ({'R²' if res['task'] == '📈 Regression' else 'Accuracy'})", f"{res['score']:.4f}")
+    
+    if 'best_params' in res:
+        st.info(f"Optimal hyperparameters found: `{res['best_params']}`")
+
+    # --- Result Tabs ---
+    tab1, tab2, tab3, tab4, tab5 = st.tabs(["🏆 Model Performance", "🧠 Global Explanation", "🔮 Local Prediction Explorer", "💡 What-If Simulator", "📦 Assets"])
+
+    with tab1:
+        if res['task'] == '🎯 Classification':
+            st.subheader("Classification Report")
+            report_df = pd.DataFrame(classification_report(res['y_test'], res['y_pred'], target_names=res['label_encoder'].classes_, output_dict=True)).transpose()
+            st.dataframe(report_df)
             
-            # 2. Preprocessing
-            y = df_cleaned[target_column]
-            X = df_cleaned.drop(columns=[target_column])
-            
-            # Label encode target for classification
-            if task == "🎯 Classification":
-                le = LabelEncoder()
-                y = le.fit_transform(y)
-            
-            # Encode features and scale
-            categorical_cols = X.select_dtypes(include=['object', 'category']).columns
-            for col in categorical_cols:
-                X[col] = LabelEncoder().fit_transform(X[col])
-            
-            scaler = StandardScaler()
-            X_scaled = scaler.fit_transform(X)
-            
-            X_train, X_test, y_train, y_test = train_test_split(X_scaled, y, test_size=0.2, random_state=42)
+            st.subheader("Confusion Matrix")
+            cm_fig, ax = plt.subplots()
+            sns.heatmap(confusion_matrix(res['y_test'], res['y_pred']), annot=True, fmt='d', ax=ax, cmap='Blues')
+            st.pyplot(cm_fig)
+        else:
+            st.subheader("Regression Metrics")
+            st.json({
+                "R-squared": r2_score(res['y_test'], res['y_pred']),
+                "Mean Absolute Error": np.mean(np.abs(res['y_pred'] - res['y_test'])),
+                "Root Mean Squared Error": np.sqrt(np.mean((res['y_pred'] - res['y_test'])**2))
+            })
 
-            # 3. Model Training
-            models = {}
-            if task == "🎯 Classification":
-                models = {
-                    "Logistic Regression": LogisticRegression(),
-                    "Random Forest": RandomForestClassifier(),
-                    "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='logloss')
-                }
-            elif task == "📈 Regression":
-                models = {
-                    "Linear Regression": LinearRegression(),
-                    "Random Forest": RandomForestRegressor(),
-                    "XGBoost": XGBRegressor(objective='reg:squarederror')
-                }
+    with tab2:
+        st.subheader("SHAP Summary Plot")
+        st.write("This plot shows the most significant features and their overall impact on the model's predictions.")
+        summary_fig, ax = plt.subplots()
+        shap.summary_plot(res['shap_values'], res['X_test_df'], plot_type="bar", show=False)
+        st.pyplot(summary_fig)
 
-            trained_models = {}
-            results = {}
-            for name, model in models.items():
-                model.fit(X_train, y_train)
-                trained_models[name] = model
-                preds = model.predict(X_test)
-                if task == "🎯 Classification":
-                    results[name] = accuracy_score(y_test, preds)
-                else:
-                    results[name] = r2_score(y_test, preds)
+    with tab3:
+        st.subheader("Single Prediction Deconstruction")
+        row_index = st.selectbox("Select a row from the test set to explain:", res['X_test_df'].index)
+        st.write("The force plot below shows features pushing the prediction higher (red) or lower (blue).")
+        st.dataframe(res['X_test_df'].iloc[[row_index]])
+        shap.force_plot(res['explainer'].expected_value, res['shap_values'][row_index], res['X_test_df'].iloc[row_index], matplotlib=True, show=False)
+        st.pyplot(plt.gcf(), bbox_inches='tight')
+        plt.clf()
 
-            # 4. Find Best Model
-            best_model_name = max(results, key=results.get)
-            best_model = trained_models[best_model_name]
-            best_model_score = results[best_model_name]
-            
-            st.success(f"Training complete! Best Model: **{best_model_name}**")
+    with tab4:
+        st.subheader("Manual Prediction Simulator")
+        input_data = {}
+        for col in res['features']:
+            input_data[col] = st.number_input(f"Enter value for {col}", value=float(res['X_test_df'][col].mean()))
+        
+        if st.button("Predict"):
+            input_df = pd.DataFrame([input_data])
+            input_scaled = res['scaler'].transform(input_df)
+            prediction = res['best_model'].predict(input_scaled)
+            if res['task'] == "🎯 Classification":
+                prediction = res['label_encoder'].inverse_transform(prediction)
+            st.success(f"**Predicted Output:** {prediction[0]}")
 
-            # --- Display Results and Advanced Features ---
-            st.header("🏆 Model Performance Results")
-            
-            # Display metrics in columns
-            col1, col2 = st.columns(2)
-            with col1:
-                st.subheader("Model Leaderboard")
-                results_df = pd.DataFrame(list(results.items()), columns=['Model', 'Score (Accuracy or R2)']).sort_values(by='Score (Accuracy or R2)', ascending=False)
-                st.dataframe(results_df, use_container_width=True)
-
-            with col2:
-                st.subheader(f"Best Model: {best_model_name}")
-                st.metric(label="Score", value=f"{best_model_score:.4f}")
-                
-                # Download button for the best model
-                model_bytes = io.BytesIO()
-                joblib.dump(best_model, model_bytes)
-                st.download_button(
-                    label="⬇️ Download Best Model (.joblib)",
-                    data=model_bytes,
-                    file_name=f"{best_model_name.replace(' ', '_')}.joblib",
-                    mime="application/octet-stream",
-                    use_container_width=True
-                )
-            
-            st.markdown("---")
-            st.header(" drilled-down analysis")
-
-            # Display advanced analytics based on task type
-            if task == "🎯 Classification":
-                with st.expander("🔬 View Classification Report & Confusion Matrix"):
-                    y_pred = best_model.predict(X_test)
-                    
-                    # Use original labels if they were encoded
-                    try:
-                        report = classification_report(y_test, y_pred, target_names=le.classes_, output_dict=True)
-                        st.dataframe(pd.DataFrame(report).transpose())
-                    except: # Fallback if target names fail
-                        report = classification_report(y_test, y_pred, output_dict=True)
-                        st.dataframe(pd.DataFrame(report).transpose())
-
-                    st.subheader("Confusion Matrix")
-                    cm = confusion_matrix(y_test, y_pred)
-                    fig = px.imshow(cm, text_auto=True, labels=dict(x="Predicted", y="Actual"), title="Confusion Matrix")
-                    st.plotly_chart(fig)
-
-            elif task == "📈 Regression":
-                with st.expander("🔬 View Detailed Regression Metrics"):
-                    y_pred = best_model.predict(X_test)
-                    metrics = {
-                        "R-squared Score": r2_score(y_test, y_pred),
-                        "Mean Squared Error (MSE)": mean_squared_error(y_test, y_pred),
-                        "Mean Absolute Error (MAE)": mean_absolute_error(y_test, y_pred)
-                    }
-                    st.json(metrics)
-
-            # Feature Importance
-            if hasattr(best_model, 'feature_importances_'):
-                with st.expander("💡 View Feature Importance"):
-                    importance = pd.DataFrame({
-                        'Feature': X.columns,
-                        'Importance': best_model.feature_importances_
-                    }).sort_values(by='Importance', ascending=False)
-                    
-                    fig = px.bar(importance, x='Importance', y='Feature', orientation='h', title=f'Feature Importance for {best_model_name}')
-                    st.plotly_chart(fig)
+    with tab5:
+        st.subheader("Downloadable Assets")
+        st.download_button("⬇️ Download Trained Model (.joblib)", data=joblib.dump(res['best_model'], 'model.joblib'), file_name="best_model.joblib")
+        st.download_button("⬇️ Download Cleaned Data (.csv)", data=res['cleaned_data'].to_csv(index=False).encode('utf-8'), file_name="cleaned_data.csv")
+        
+        predictions_df = res['X_test_df'].copy()
+        predictions_df['prediction'] = res['y_pred']
+        if res['task'] == "🎯 Classification":
+            predictions_df['prediction'] = res['label_encoder'].inverse_transform(predictions_df['prediction'])
+        st.download_button("⬇️ Download Predictions on Test Set (.csv)", data=predictions_df.to_csv(index=False).encode('utf-8'), file_name="test_predictions.csv")
